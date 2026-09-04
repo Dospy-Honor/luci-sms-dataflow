@@ -35,9 +35,9 @@ uci commit luci-sms-dataflow
 
 ## 构建
 
-### 无 SDK 备用打包
+### 无 SDK 打包
 
-本项目不含原生二进制或内核模块，可在 Linux 或 WSL 中直接生成 `all` 架构 IPK：
+本项目不含原生二进制或内核模块，可在 Linux 中直接生成 `all` 架构 IPK：
 
 ```sh
 chmod +x build-ipk.sh
