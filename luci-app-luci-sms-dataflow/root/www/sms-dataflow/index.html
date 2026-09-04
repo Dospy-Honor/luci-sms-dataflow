@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>流量剩余检测</title>
+  <style>
+    :root { --ink:#14213d; --muted:#68758b; --line:#e7ebf1; --panel:#fff; --bg:#f5f7fb; --brand:#2155d6; --brand-dark:#163ea2; --accent:#e9f0ff; }
+    * { box-sizing:border-box; }
+    body { min-height:100vh; margin:0; background:linear-gradient(135deg,#eef3ff 0,#f7f9fc 48%,#eef7f6 100%); color:var(--ink); font:15px -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; }
+    .shell { width:min(1180px,calc(100% - 48px)); margin:42px auto; }
+    .hero { display:flex; align-items:center; gap:15px; margin:0 0 22px; }
+    .hero-icon { display:grid; width:48px; height:48px; place-items:center; border-radius:15px; background:linear-gradient(135deg,#2d64e5,#173ca1); box-shadow:0 9px 20px #173ca13a; color:#fff; font-size:23px; }
+    h1 { margin:0; font-size:27px; letter-spacing:.2px; }
+    .subtitle { margin:4px 0 0; color:var(--muted); }
+    .grid { display:grid; grid-template-columns:1.3fr .7fr; gap:22px; }
+    .card { border:1px solid #e6eaf1; border-radius:18px; background:var(--panel); box-shadow:0 8px 24px #2436570d; overflow:hidden; }
+    .card-head { display:flex; align-items:center; justify-content:space-between; padding:20px 24px; border-bottom:1px solid var(--line); }
+    .card h2 { margin:0; font-size:18px; }
+    .badge { border-radius:20px; background:#edf7ef; color:#28743a; padding:4px 9px; font-size:12px; }
+    .body { padding:23px 24px 25px; }
+    label { display:block; margin:0 0 7px; font-weight:600; font-size:13px; }
+    .field { margin-bottom:18px; }
+    select,input { width:100%; height:42px; appearance:none; border:1px solid #dce3ed; border-radius:10px; background:#fff; color:var(--ink); padding:0 12px; font:inherit; outline:none; transition:border .18s,box-shadow .18s; }
+    select { background-image:linear-gradient(45deg,transparent 50%,#6b7890 50%),linear-gradient(135deg,#6b7890 50%,transparent 50%); background-position:calc(100% - 16px) 18px,calc(100% - 11px) 18px; background-size:5px 5px,5px 5px; background-repeat:no-repeat; }
+    select:focus,input:focus { border-color:#7598ed; box-shadow:0 0 0 3px #dce7ff; }
+    .button { width:100%; min-height:43px; border:0; border-radius:10px; background:linear-gradient(135deg,var(--brand),var(--brand-dark)); box-shadow:0 7px 13px #1e4db833; color:#fff; font-weight:600; font:inherit; cursor:pointer; transition:transform .16s,filter .16s; }
+    .button:hover { filter:brightness(1.06); transform:translateY(-1px); }
+    .button:active { transform:translateY(0); }
+    .button.secondary { background:#f1f5ff; box-shadow:none; color:var(--brand-dark); border:1px solid #d8e3ff; }
+    .hint { display:flex; gap:9px; align-items:flex-start; margin:15px 0 0; padding:11px 12px; border-radius:10px; background:#f7f9fc; color:var(--muted); font-size:12px; line-height:1.55; }
+    .hint strong { color:var(--ink); }
+    .timer-icon { display:grid; width:40px; height:40px; place-items:center; border-radius:11px; background:var(--accent); color:var(--brand); font-size:18px; }
+    .timer-title { display:flex; align-items:center; gap:10px; margin:0 0 19px; }
+    .timer-title p { margin:3px 0 0; color:var(--muted); font-size:12px; }
+    .traffic-card { grid-column:1 / -1; }
+    .traffic-card .body { padding:21px 24px 12px; }
+    .traffic-empty { padding:8px 0 14px; color:var(--muted); }
+    .traffic-row { padding:0 0 18px; }
+    .traffic-name { margin:0 0 9px; color:var(--ink); font-size:13px; font-weight:600; }
+    .traffic-track { height:14px; overflow:hidden; border-radius:999px; background:#eef2f7; }
+    .traffic-used { width:0; height:100%; border-radius:inherit; background:linear-gradient(90deg,#ffae17,#f39500); box-shadow:inset 0 -1px 0 #d77c00; transition:width .45s ease; }
+    .traffic-meta { margin:9px 0 0; color:#667a98; font-size:14px; }
+    .footer { margin:18px 2px; color:#8290a6; font-size:12px; text-align:center; }
+    @media (max-width:680px) { .shell { width:calc(100% - 28px); margin:20px auto; } .grid { grid-template-columns:1fr; gap:16px; } .hero { margin-bottom:16px; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div class="hero-icon">✉</div>
+      <div><h1>实时流量剩余检测器</h1><p class="subtitle">通过短信检测剩余流量</p></div>
+    </header>
+    <section class="grid">
+      <article class="card">
+        <div class="card-head"><h2>手动检测</h2></div>
+        <div class="body">
+          <div class="field"><label for="module">选择模块</label><select id="module"><option value="">正在加载模块…</option></select></div>
+          <div class="field"><label for="preset">选择运营商</label><select id="preset"><option value="">正在加载选项…</option></select></div>
+          <button class="button" type="button" onclick="sendNow()">立即检测</button>
+        </div>
+      </article>
+      <article class="card">
+        <div class="card-head"><h2>自动检测</h2></div>
+        <div class="body">
+          <div class="field"><label for="minutes">定时间隔（分钟）</label><input id="minutes" type="number" min="1" max="1440" value="5"></div>
+          <button id="timer-toggle" class="button secondary" type="button" onclick="toggleTimer()">开启自动检测功能</button>
+          <div class="hint"><span>ⓘ</span><span>每次定时执行都会发送检测，并在 15 秒后自动读取短信。关闭后会保留当前设置。</span></div>
+        </div>
+      </article>
+    </section>
+    <section class="grid" style="margin-top:18px">
+      <article class="card traffic-card">
+        <div class="card-head"><h2>流量概览</h2><span id="traffic-updated" class="badge">暂无数据</span></div>
+        <div class="body"><div id="traffic-list" class="traffic-empty">等待短信检测结果…</div></div>
+      </article>
+    </section>
+    <p class="footer">QModem 模块信息 · tom_modem 短信收发</p>
+  </main>
+  <script>
+  (function () {
+    var endpoint = '/cgi-bin/luci-sms-dataflow';
+    var module = document.getElementById('module');
+    var preset = document.getElementById('preset');
+    var timerButton = document.getElementById('timer-toggle');
+    var trafficList = document.getElementById('traffic-list');
+    var trafficUpdated = document.getElementById('traffic-updated');
+    var timerEnabled = false;
+    function query(params) { return Object.keys(params).map(function (key) { return encodeURIComponent(key) + '=' + encodeURIComponent(params[key]); }).join('&'); }
+    function request(params, callback) { var xhr = new XMLHttpRequest(); xhr.onreadystatechange = function () { if (xhr.readyState === 4 && xhr.status === 200 && callback) { try { callback(JSON.parse(xhr.responseText)); } catch (ignore) {} } }; xhr.open('GET', endpoint + '?' + query(params), true); xhr.send(null); }
+    function reset(select) { while (select.firstChild) select.removeChild(select.firstChild); }
+    function add(select, value, text) { var option = document.createElement('option'); option.value = value; option.textContent = text; select.appendChild(option); }
+    window.sendNow = function () { if (module.value) request({ action:'send', module:module.value, preset:preset.value }); };
+    function setTimerState(enabled) { timerEnabled = !!enabled; timerButton.textContent = timerEnabled ? '关闭定时功能' : '开启定时功能'; timerButton.className = timerEnabled ? 'button' : 'button secondary'; }
+    window.toggleTimer = function () {
+      if (timerEnabled) { request({ action:'disable-timer' }, function (data) { if (data.ok) setTimerState(false); }); return; }
+      if (!module.value) return;
+      request({ action:'interval', module:module.value, preset:preset.value, minutes:document.getElementById('minutes').value }, function (data) { if (data.ok) setTimerState(true); });
+    };
+    function loadTimerState() { request({ action:'timer-status' }, function (data) { var enabled; if (!data.ok) return; if (data.minutes) document.getElementById('minutes').value = data.minutes; if (data.module) module.value = data.module; if (data.preset) preset.value = data.preset; enabled = data.enabled === true || data.enabled === 1 || data.enabled === '1'; setTimerState(enabled); }); }
+    function amountMB(value) {
+      var total = 0, match, units = { TB:1048576, GB:1024, MB:1, KB:1 / 1024 }, re = /(\d+(?:\.\d+)?)\s*(TB|GB|MB|KB)/ig;
+      while ((match = re.exec(value || ''))) total += parseFloat(match[1]) * units[match[2].toUpperCase()];
+      return total;
+    }
+    function displayAmount(value) {
+      if (value >= 1024) return (value / 1024).toFixed(1) + ' GB';
+      if (value >= 1) return value.toFixed(value < 10 ? 1 : 0) + ' MB';
+      return Math.round(value * 1024) + ' KB';
+    }
+    function planName(text, index, fallback) {
+      var prefix = text.slice(Math.max(0, index - 150), index), labels = prefix.match(/(?:^|\n)\s*(?:\d+\.)?([^:\n]{2,80}):|\d+\.([^:\n]{2,80}):/g), label;
+      if (!labels || !labels.length) return fallback;
+      label = labels[labels.length - 1].replace(/^\s*\d+\./, '').replace(/:$/, '').replace(/^\s+|\s+$/g, '');
+      return label || fallback;
+    }
+    function extractTraffic(data) {
+      var messages = (data.msg || []).slice().sort(function (a, b) { return (+a.part || 0) - (+b.part || 0); });
+      var text = messages.map(function (item) { return item.content || ''; }).join('');
+      var amount = '(?:\\d+(?:\\.\\d+)?\\s*(?:TB|GB|MB|KB)\\s*)+';
+      var re = new RegExp('含国内\\s*([^，,\\n]*?)流量\\s*(' + amount + ')\\s*[，,]\\s*已使用\\s*(' + amount + ')\\s*[，,]\\s*目前剩余\\s*(' + amount + ')', 'g');
+      var rows = [], match, total, used, remaining;
+      while ((match = re.exec(text))) {
+        total = amountMB(match[2]); used = amountMB(match[3]); remaining = amountMB(match[4]);
+        if (total > 0) rows.push({ name:planName(text, match.index, match[1] + '流量') + ' · ' + match[1] + '流量', total:total, used:used, remaining:remaining });
+      }
+      return rows;
+    }
+    function updateTime(timestamp) {
+      var date, pad;
+      if (!timestamp || !/^[0-9]+$/.test(String(timestamp))) { trafficUpdated.textContent = '暂无数据'; return; }
+      date = new Date(Number(timestamp) * 1000);
+      pad = function (value) { return value < 10 ? '0' + value : String(value); };
+      trafficUpdated.textContent = '更新 ' + date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' ' + pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds());
+    }
+    function renderTraffic(data) {
+      var rows = extractTraffic(data), fragment = document.createDocumentFragment();
+      updateTime(data.updated_at);
+      while (trafficList.firstChild) trafficList.removeChild(trafficList.firstChild);
+      if (!rows.length) { trafficList.className = 'traffic-empty'; trafficList.textContent = '暂无可识别的流量短信数据'; return; }
+      trafficList.className = '';
+      rows.forEach(function (row) {
+        var percent = Math.max(0, Math.min(100, Math.round(row.used / row.total * 100)));
+        var item = document.createElement('div'), name = document.createElement('div'), track = document.createElement('div'), used = document.createElement('div'), meta = document.createElement('p');
+        item.className = 'traffic-row'; name.className = 'traffic-name'; track.className = 'traffic-track'; used.className = 'traffic-used'; meta.className = 'traffic-meta';
+        name.textContent = row.name; used.style.width = percent + '%'; meta.textContent = '已用 ' + displayAmount(row.used) + ' / ' + displayAmount(row.total) + ' (' + percent + '%) · 剩余 ' + displayAmount(row.remaining);
+        track.appendChild(used); item.appendChild(name); item.appendChild(track); item.appendChild(meta); fragment.appendChild(item);
+      });
+      trafficList.appendChild(fragment);
+    }
+    function loadTraffic() { request({ action:'traffic' }, renderTraffic); }
+    var xhr = new XMLHttpRequest();
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState !== 4 || xhr.status !== 200) return;
+      try {
+        var data = JSON.parse(xhr.responseText); reset(module); reset(preset);
+        (data.modules || []).forEach(function (item) { add(module,item.section,item.section+' · '+item.name); });
+        (data.presets || []).forEach(function (item) { add(preset,item.id,item.name); });
+        if (!module.options.length) add(module,'','未发现 QModem 模块');
+        loadTimerState();
+        loadTraffic();
+      } catch (ignore) {}
+    };
+    xhr.open('GET', endpoint + '?action=modules', true); xhr.send(null);
+    window.setInterval(loadTraffic, 5000);
+  }());
+  </script>
+</body>
+</html>

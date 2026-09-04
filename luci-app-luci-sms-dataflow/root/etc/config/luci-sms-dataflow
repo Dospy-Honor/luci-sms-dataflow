@@ -1,0 +1,15 @@
+config preset 'preset1'
+	option name '中国电信'
+	option pdu '00010005810100F100000431182E07'
+
+config preset 'preset2'
+	option name '中国移动'
+	option pdu '0001000581100806F0000004633C9B0D'
+
+config preset 'preset3'
+	option name '中国联通'
+	option pdu '0001000581100100F0000004633C9B0D'
+
+config preset 'preset4'
+	option name '中国广电'
+	option pdu '0001000581100809F0000004633C9B0D'

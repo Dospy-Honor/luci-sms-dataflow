@@ -1,0 +1,4 @@
+*.sh text eol=lf
+luci-app-luci-sms-dataflow/root/usr/libexec/luci-sms-dataflow text eol=lf
+luci-app-luci-sms-dataflow/root/etc/init.d/luci-sms-dataflow text eol=lf
+luci-app-luci-sms-dataflow/root/www/cgi-bin/luci-sms-dataflow text eol=lf

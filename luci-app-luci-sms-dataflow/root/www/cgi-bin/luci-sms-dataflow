@@ -1,0 +1,18 @@
+#!/bin/sh
+
+# Standalone uhttpd CGI bridge. It deliberately avoids the QWRT LuCI dispatcher.
+param() {
+	printf '%s' "$QUERY_STRING" | tr '&' '\n' | sed -n "s/^$1=//p" | head -n 1
+}
+
+printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n'
+
+case "$(param action)" in
+	modules) exec /usr/libexec/luci-sms-dataflow modules ;;
+	send) exec /usr/libexec/luci-sms-dataflow detect "$(param module)" "$(param preset)" ;;
+	interval) exec /usr/libexec/luci-sms-dataflow add-interval "$(param module)" "$(param preset)" "$(param minutes)" ;;
+	timer-status) exec /usr/libexec/luci-sms-dataflow timer-status ;;
+	disable-timer) exec /usr/libexec/luci-sms-dataflow disable-timer ;;
+	traffic) exec /usr/libexec/luci-sms-dataflow traffic ;;
+	*) printf '%s\n' '{"ok":false,"error":"unknown action"}' ;;
+esac

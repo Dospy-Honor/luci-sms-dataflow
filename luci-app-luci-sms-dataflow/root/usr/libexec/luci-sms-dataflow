@@ -1,0 +1,371 @@
+#!/bin/sh
+
+# QModem SMS backend.  All output is a single JSON object.
+
+readonly TOM_MODEM="$(command -v tom_modem 2>/dev/null)"
+readonly RAW_OUTPUT=/tmp/sms_temp.json
+readonly FINAL_OUTPUT=/tmp/sms.json
+readonly READ_DELAY_SECONDS=15
+
+. /usr/share/libubox/jshn.sh
+
+reply_error() {
+	json_init
+	json_add_boolean ok 0
+	json_add_string error "$1"
+	json_dump
+	exit 1
+}
+
+reply_ok() {
+	json_add_boolean ok 1
+	json_dump
+}
+
+valid_section() {
+	case "$1" in
+		''|*[!A-Za-z0-9_]* ) return 1 ;;
+		* ) return 0 ;;
+	esac
+}
+
+get_at_port() {
+	valid_section "$1" || return 1
+	[ "$(uci -q get "qmodem.$1" 2>/dev/null)" = "modem-device" ] || return 1
+	uci -q get "qmodem.$1.at_port" 2>/dev/null
+}
+
+modules() {
+	json_init
+	json_add_array modules
+	for section in $(uci -q show qmodem 2>/dev/null | sed -n 's/^qmodem\.\([A-Za-z0-9_]*\)=modem-device$/\1/p'); do
+		port="$(get_at_port "$section")" || continue
+		json_add_object
+		json_add_string section "$section"
+		json_add_string name "$(uci -q get "qmodem.$section.name" 2>/dev/null || printf '%s' "$section")"
+		json_add_string at_port "$port"
+		json_close_object
+	done
+	json_close_array
+	json_add_array presets
+	for preset in 1 2 3 4; do
+		pdu="$(uci -q get "luci-sms-dataflow.preset$preset.pdu" 2>/dev/null)"
+		json_add_object
+		json_add_int id "$preset"
+		json_add_string name "$(uci -q get "luci-sms-dataflow.preset$preset.name" 2>/dev/null || printf '预设短信 %s' "$preset")"
+		[ -n "$pdu" ] && json_add_boolean configured 1 || json_add_boolean configured 0
+		json_close_object
+	done
+	json_close_array
+	reply_ok
+}
+
+send() {
+	section="$1"
+	preset="$2"
+	port="$(get_at_port "$section")" || reply_error '无效的 QModem 模块。'
+	case "$preset" in 1|2|3|4) ;; *) reply_error '无效的短信预设。' ;; esac
+	pdu="$(uci -q get "luci-sms-dataflow.preset$preset.pdu" 2>/dev/null)"
+	name="$(uci -q get "luci-sms-dataflow.preset$preset.name" 2>/dev/null)"
+	[ -n "$pdu" ] || reply_error "预设 $preset 尚未配置 PDU。"
+	case "$pdu" in *[!0-9A-Fa-f]* ) reply_error 'PDU 必须只包含十六进制字符。' ;; esac
+	[ -n "$TOM_MODEM" ] && [ -x "$TOM_MODEM" ] || reply_error '未找到 tom_modem。'
+	# QModem only supplies the selected AT port; all SMS I/O is tom_modem.
+	log="$($TOM_MODEM -D -d "$port" -o s -p "$pdu" 2>&1)"
+	status=$?
+	[ "$status" -eq 0 ] || reply_error "短信发送失败：$log"
+	json_init
+	json_add_string module "$section"
+	json_add_string at_port "$port"
+	json_add_string preset "$name"
+	json_add_string log "$log"
+	reply_ok
+}
+
+run_detect() {
+	section="$1"
+	preset="$2"
+	logger -t luci-sms-dataflow "detection send: module=$section preset=$preset"
+	send_log="$("$0" send "$section" "$preset" 2>&1)"
+	send_status=$?
+	logger -t luci-sms-dataflow "$send_log"
+	[ "$send_status" -eq 0 ] || exit "$send_status"
+	# The operator response is expected to arrive asynchronously after sending.
+	sleep "$READ_DELAY_SECONDS"
+	logger -t luci-sms-dataflow "detection read: module=$section"
+	read_log="$("$0" read "$section" 2>&1)"
+	logger -t luci-sms-dataflow "$read_log"
+}
+
+detect() {
+	section="$1"
+	preset="$2"
+	get_at_port "$section" >/dev/null || reply_error '无效的 QModem 模块。'
+	case "$preset" in 1|2|3|4) ;; *) reply_error '无效的短信预设。' ;; esac
+	# Detach so the browser request returns immediately; read runs shortly after.
+	("$0" run-detect "$section" "$preset") >/dev/null 2>&1 &
+	json_init
+	json_add_string module "$section"
+	json_add_int preset "$preset"
+	json_add_int read_after_seconds "$READ_DELAY_SECONDS"
+	reply_ok
+}
+
+read_latest() {
+	section="$1"
+	port="$(get_at_port "$section")" || reply_error '无效的 QModem 模块。'
+	[ -n "$TOM_MODEM" ] && [ -x "$TOM_MODEM" ] || reply_error '未找到 tom_modem。'
+	raw="$($TOM_MODEM -d "$port" -o r 2>&1)"
+	# Keep the modem's complete response for diagnosis until reassembly succeeds.
+	printf '%s\n' "$raw" >"$RAW_OUTPUT" || reply_error '无法写入 /tmp/sms_temp.json。'
+	json_load "$raw" || reply_error 'tom_modem 返回的不是有效 JSON。'
+	json_select msg || reply_error '收件箱为空。'
+	json_get_keys keys
+	[ -n "$keys" ] || reply_error '收件箱为空。'
+
+	max_index=-1
+	min_index=-1
+	for key in $keys; do
+		json_select "$key"
+		json_get_var index index
+		json_select ..
+		case "$index" in ''|*[!0-9]*) continue ;; esac
+		[ "$index" -gt "$max_index" ] && max_index="$index" && max_key="$key"
+		[ "$min_index" -lt 0 ] || [ "$index" -lt "$min_index" ] && min_index="$index"
+	done
+	[ "$max_index" -ge 0 ] || reply_error '未找到有效短信索引。'
+
+	json_select "$max_key"
+	json_get_var reference reference
+	json_select ..
+	[ -n "$reference" ] || reply_error '最新短信缺少 reference。'
+
+	parts=""
+	wanted="$max_index"
+	# Traverse down from the newest index. Stop at the first earlier SMS whose
+	# reference differs; this deliberately does not collect older matching groups.
+	while [ "$wanted" -ge "$min_index" ]; do
+	found_key=''
+	found_reference=''
+	found_part=''
+		for key in $keys; do
+			json_select "$key"
+			json_get_var item_index index
+			json_get_var item_reference reference
+			json_get_var item_part part
+			json_select ..
+			[ "$item_index" = "$wanted" ] || continue
+			found_key="$key"
+			found_reference="$item_reference"
+			found_part="$item_part"
+			break
+		done
+		# Deleted inbox slots are skipped while continuing to the next index.
+		[ -n "$found_key" ] || { wanted=$((wanted - 1)); continue; }
+		[ "$found_reference" = "$reference" ] || break
+		case "$found_part" in ''|*[!0-9]*) reply_error '短信分片缺少有效 part。' ;; esac
+		# Command substitution removes trailing newlines. Keep a sentinel so every
+		# collected part remains a separate line for sort/read below.
+		part_line="$(printf '%08d\t%s\t%s\nx' "$found_part" "$found_key" "$found_part")"
+		parts="${parts}${part_line%x}"
+		wanted=$((wanted - 1))
+	done
+	[ -n "$parts" ] || reply_error '未找到同 reference 的短信分片。'
+
+	sorted="$(printf '%s' "$parts" | sort -n)"
+	items=''
+	separator=''
+	while IFS="$(printf '\t')" read -r sort_part key part; do
+		[ -n "$key" ] || continue
+		# Reload raw JSON for each part, then use jshn to JSON-escape the content.
+		json_load "$raw" || reply_error '无法重新解析 sms_temp.json。'
+		json_select msg
+		json_select "$key"
+		json_get_var piece content
+		json_init
+		json_add_string content "$piece"
+		json_add_int part "$part"
+		item="$(json_dump)"
+		items="${items}${separator}${item}"
+		separator=','
+	done <<EOF
+$sorted
+EOF
+	printf '{"msg":[%s]}\n' "$items" >"${FINAL_OUTPUT}.new" && mv "${FINAL_OUTPUT}.new" "$FINAL_OUTPUT" || reply_error '无法写入 /tmp/sms.json。'
+	rm -f "$RAW_OUTPUT"
+
+	json_init
+	json_add_boolean ok 1
+	json_add_string module "$section"
+	json_add_string at_port "$port"
+	json_add_string output "$FINAL_OUTPUT"
+	json_dump
+}
+
+traffic() {
+	mtime=0
+	json_init
+	if [ -r "$FINAL_OUTPUT" ]; then
+		payload="$(cat "$FINAL_OUTPUT" 2>/dev/null)"
+		if json_load "$payload"; then
+			mtime="$(stat -c %Y "$FINAL_OUTPUT" 2>/dev/null || printf 0)"
+			case "$mtime" in ''|*[!0-9]*) mtime=0 ;; esac
+			json_add_int updated_at "$mtime"
+			json_dump
+			return
+		fi
+	fi
+	json_add_array msg
+	json_close_array
+	json_add_int updated_at 0
+	json_dump
+}
+
+add_schedule() {
+	section="$1"
+	preset="$2"
+	time="$3"
+	get_at_port "$section" >/dev/null || reply_error '无效的 QModem 模块。'
+	case "$preset" in 1|2|3|4) ;; *) reply_error '无效的短信预设。' ;; esac
+	case "$time" in
+		[01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;;
+		*) reply_error '时间必须为 HH:MM（24 小时制）。' ;;
+	esac
+	name="$(uci -q add luci-sms-dataflow schedule)" || reply_error '无法创建定时规则。'
+	uci set "luci-sms-dataflow.$name.enabled=1"
+	uci set "luci-sms-dataflow.$name.module=$section"
+	uci set "luci-sms-dataflow.$name.preset=$preset"
+	uci set "luci-sms-dataflow.$name.time=$time"
+	uci commit luci-sms-dataflow || reply_error '无法保存定时规则。'
+	[ -x /etc/init.d/luci-sms-dataflow ] && /etc/init.d/luci-sms-dataflow enable && /etc/init.d/luci-sms-dataflow start
+	json_init
+	json_add_string id "$name"
+	json_add_string module "$section"
+	json_add_string preset "$preset"
+	json_add_string time "$time"
+	reply_ok
+}
+
+add_interval_schedule() {
+	section="$1"
+	preset="$2"
+	minutes="$3"
+	get_at_port "$section" >/dev/null || reply_error '无效的 QModem 模块。'
+	case "$preset" in 1|2|3|4) ;; *) reply_error '无效的短信预设。' ;; esac
+	case "$minutes" in ''|*[!0-9]*|0) reply_error '间隔必须是大于 0 的分钟数。' ;; esac
+	[ "$minutes" -le 1440 ] || reply_error '间隔不能超过 1440 分钟。'
+
+	# Replace the previous interval rule: the UI intentionally exposes one timer.
+	for old in $(uci -q show luci-sms-dataflow 2>/dev/null | sed -n 's/^luci-sms-dataflow\.\([^=]*\)=interval_schedule$/\1/p'); do
+		uci -q delete "luci-sms-dataflow.$old"
+	done
+	# Use a stable section name so the web UI can reliably restore the saved
+	# timer state after a page refresh.
+	name='timer'
+	uci set "luci-sms-dataflow.$name=interval_schedule" || reply_error '无法创建定时规则。'
+	uci set "luci-sms-dataflow.$name.enabled=1"
+	uci set "luci-sms-dataflow.$name.module=$section"
+	uci set "luci-sms-dataflow.$name.preset=$preset"
+	uci set "luci-sms-dataflow.$name.minutes=$minutes"
+	uci set "luci-sms-dataflow.$name.last_run=$(date +%s)"
+	uci commit luci-sms-dataflow || reply_error '无法保存定时规则。'
+	[ -x /etc/init.d/luci-sms-dataflow ] && /etc/init.d/luci-sms-dataflow enable && /etc/init.d/luci-sms-dataflow start
+	json_init
+	json_add_string id "$name"
+	json_add_string module "$section"
+	json_add_string preset "$preset"
+	json_add_int minutes "$minutes"
+	reply_ok
+}
+
+get_interval_schedule() {
+	# New installations use the stable "timer" section. Keep the fallback so
+	# interval rules created by older package versions remain visible.
+	[ "$(uci -q get luci-sms-dataflow.timer 2>/dev/null)" = 'interval_schedule' ] && {
+		printf '%s\n' timer
+		return 0
+	}
+	uci -q show luci-sms-dataflow 2>/dev/null | sed -n 's/^luci-sms-dataflow\.\([^=]*\)=interval_schedule$/\1/p' | head -n 1
+}
+
+timer_status() {
+	name="$(get_interval_schedule)"
+	json_init
+	if [ -n "$name" ]; then
+		enabled="$(uci -q get "luci-sms-dataflow.$name.enabled" 2>/dev/null)"
+		case "$enabled" in 1|true|on|yes) json_add_boolean enabled 1 ;; *) json_add_boolean enabled 0 ;; esac
+		json_add_string module "$(uci -q get "luci-sms-dataflow.$name.module" 2>/dev/null)"
+		json_add_string preset "$(uci -q get "luci-sms-dataflow.$name.preset" 2>/dev/null)"
+		json_add_int minutes "$(uci -q get "luci-sms-dataflow.$name.minutes" 2>/dev/null || printf 0)"
+	else
+		json_add_boolean enabled 0
+	fi
+	reply_ok
+}
+
+disable_timer() {
+	found=0
+	for name in $(uci -q show luci-sms-dataflow 2>/dev/null | sed -n 's/^luci-sms-dataflow\.\([^=]*\)=interval_schedule$/\1/p'); do
+		uci set "luci-sms-dataflow.$name.enabled=0"
+		found=1
+	done
+	[ "$found" -eq 0 ] || uci commit luci-sms-dataflow || reply_error '无法关闭定时规则。'
+	json_init
+	json_add_boolean enabled 0
+	reply_ok
+}
+
+run_due() {
+	. /lib/functions.sh
+	now="$(date '+%H:%M')"
+	run_one() {
+		local cfg="$1" enabled module preset time
+		config_get enabled "$cfg" enabled 1
+		config_get module "$cfg" module
+		config_get preset "$cfg" preset
+		config_get time "$cfg" time
+		[ "$enabled" = 1 ] && [ "$time" = "$now" ] || return 0
+		logger -t luci-sms-dataflow "scheduled send: module=$module preset=$preset"
+		"$0" send "$module" "$preset" | logger -t luci-sms-dataflow
+	}
+	run_interval() {
+		local cfg="$1" enabled module preset minutes last_run now_epoch elapsed output
+		config_get enabled "$cfg" enabled 1
+		config_get module "$cfg" module
+		config_get preset "$cfg" preset
+		config_get minutes "$cfg" minutes
+		config_get last_run "$cfg" last_run 0
+		case "$minutes" in ''|*[!0-9]*) return 0 ;; esac
+		case "$last_run" in ''|*[!0-9]*) return 0 ;; esac
+		[ "$enabled" = 1 ] || return 0
+		now_epoch="$(date +%s)"
+		elapsed=$((now_epoch - last_run))
+		[ "$elapsed" -ge $((minutes * 60)) ] || return 0
+		logger -t luci-sms-dataflow "interval send: module=$module preset=$preset interval=${minutes}m"
+		if output="$("$0" detect "$module" "$preset")"; then
+			uci set "luci-sms-dataflow.$cfg.last_run=$now_epoch"
+			uci commit luci-sms-dataflow
+			logger -t luci-sms-dataflow "$output"
+		else
+			logger -t luci-sms-dataflow "$output"
+		fi
+	}
+	config_load luci-sms-dataflow
+	config_foreach run_one schedule
+	config_foreach run_interval interval_schedule
+}
+
+case "$1" in
+	modules) modules ;;
+	send) send "$2" "$3" ;;
+	detect) detect "$2" "$3" ;;
+	run-detect) run_detect "$2" "$3" ;;
+	read) read_latest "$2" ;;
+	traffic) traffic ;;
+	add-schedule) add_schedule "$2" "$3" "$4" ;;
+	add-interval) add_interval_schedule "$2" "$3" "$4" ;;
+	timer-status) timer_status ;;
+	disable-timer) disable_timer ;;
+	due) run_due ;;
+	*) reply_error '未知操作。' ;;
+esac

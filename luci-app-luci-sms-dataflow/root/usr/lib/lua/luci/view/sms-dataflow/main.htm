@@ -1,0 +1,74 @@
+<%+header%>
+<h2><%:短信检测%></h2>
+<div class="cbi-map">
+	<div class="cbi-section">
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="sms-module"><%:选择模块%></label>
+			<div class="cbi-value-field"><select class="cbi-input-select" id="sms-module"></select></div>
+		</div>
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="sms-preset"><%:选择运营商%></label>
+			<div class="cbi-value-field"><select class="cbi-input-select" id="sms-preset"></select></div>
+		</div>
+		<div class="cbi-page-actions">
+			<input class="btn cbi-button cbi-button-positive" type="button" value="<%:立即检测%>" onclick="sendNow()" />
+		</div>
+		<div class="cbi-value">
+			<label class="cbi-value-title" for="sms-minutes"><%:定时间隔（分钟）%></label>
+			<div class="cbi-value-field"><input class="cbi-input-text" id="sms-minutes" type="number" min="1" max="1440" value="5" /></div>
+		</div>
+		<div class="cbi-page-actions">
+			<input class="btn cbi-button cbi-button-action" type="button" value="<%:开启定时功能%>" onclick="enableTimer()" />
+		</div>
+	</div>
+</div>
+<script type="text/javascript">
+//<![CDATA[
+(function() {
+	var base = '<%=luci.dispatcher.build_url("admin", "services", "sms-dataflow")%>';
+	var moduleSelect = document.getElementById('sms-module');
+	var presetSelect = document.getElementById('sms-preset');
+
+	function request(path) {
+		var xhr = new XMLHttpRequest();
+		xhr.open('GET', base + '/' + path, true);
+		xhr.send(null);
+	}
+
+	function option(select, value, text) {
+		var item = document.createElement('option');
+		item.value = value;
+		item.appendChild(document.createTextNode(text));
+		select.appendChild(item);
+	}
+
+	window.sendNow = function() {
+		if (moduleSelect.value)
+			request('send?module=' + encodeURIComponent(moduleSelect.value) + '&preset=' + encodeURIComponent(presetSelect.value));
+	};
+
+	window.enableTimer = function() {
+		if (moduleSelect.value)
+			request('interval?module=' + encodeURIComponent(moduleSelect.value) + '&preset=' + encodeURIComponent(presetSelect.value) + '&minutes=' + encodeURIComponent(document.getElementById('sms-minutes').value));
+	};
+
+	var xhr = new XMLHttpRequest();
+	xhr.onreadystatechange = function() {
+		if (xhr.readyState !== 4 || xhr.status !== 200)
+			return;
+		try {
+			var data = JSON.parse(xhr.responseText);
+			var i;
+			for (i = 0; i < (data.modules || []).length; i++)
+				option(moduleSelect, data.modules[i].section, data.modules[i].section + ' (' + data.modules[i].name + ')');
+			for (i = 0; i < (data.presets || []).length; i++)
+				option(presetSelect, data.presets[i].id, data.presets[i].name);
+		}
+		catch (ignore) {}
+	};
+	xhr.open('GET', base + '/modules', true);
+	xhr.send(null);
+})();
+//]]>
+</script>
+<%+footer%>
