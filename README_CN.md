@@ -12,7 +12,7 @@
 
 ```
 luci-app-luci-sms-dataflow/
-  Makefile                         OpenWrt 软件包定义
+  Makefile                        
   root/etc/config/luci-sms-dataflow 四个 PDU 预设配置
   root/usr/libexec/luci-sms-dataflow 后端命令
   root/usr/lib/lua/luci/controller/  HTTP API 路由
